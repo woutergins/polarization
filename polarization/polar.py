@@ -6,12 +6,14 @@
 
 .. moduleauthor:: Wouter Gins <wouter.gins@fys.kuleuven.be>
 """
-from profiles import Lorentzian
-from wigner import wigner_3j as W3J
-from wigner import wigner_6j as W6J
-import utilities as util
 import numpy as np
+from .profiles import Lorentzian
 from scipy import integrate
+from sympy.physics.wigner import wigner_6j, wigner_3j
+from . import utilities as util
+
+W6J = wigner_6j
+W3J = wigner_3j
 
 __all__ = ['Polar']
 
@@ -22,7 +24,7 @@ PI = np.pi  # pi...
 GL = 1.0  # Orbital g-factor
 GS = 2.00232  # Spin g-factor
 MUB = 9.27408e-24  # Bohr magneton
-EV_TO_MHZ = 2.417989348 * 10 ** 8  # eV to MHz conversion factor
+EV_TO_MHZ = 2.417989262 * 10 ** 8  # eV to MHz conversion factor
 
 
 #######################
@@ -778,7 +780,7 @@ class Polar(object):
                     f.append(a)
             else:
                 f = np.meshgrid(*f)
-            resp = np.zeros(np.shape(f[0]) + (len(self.F.flatten()) + 1,))
+            resp = np.zeros(np.shape(f[0]) + (len(self.F) + 1,))
             indices = util.state_number_enumerate(np.shape(f[0]))
             for inds in indices:
                 resp[inds] = self._produce([F[inds] for F in f])
