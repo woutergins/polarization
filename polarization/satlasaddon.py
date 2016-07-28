@@ -72,6 +72,15 @@ class BxRho_Voigt(Voigt)
         self._mu = value
         self.set_factor()
 
+    @property
+    def laser(self):
+        return self._laser
+
+    @laser.setter
+    def laser(self, value):
+        self._laser = value
+        self.set_factor()
+
     def set_factor(self):
         self._factor = self.A * self.laser * C * C / (8 * PI * H * self.mu * self.mu)
 
@@ -101,6 +110,15 @@ class BxRho_Lorentzian(Lorentzian)
     @mu.setter
     def mu(self, value):
         self._mu = value
+        self.set_factor()
+
+    @property
+    def laser(self):
+        return self._laser
+
+    @laser.setter
+    def laser(self, value):
+        self._laser = value
         self.set_factor()
 
     def set_factor(self):
@@ -166,19 +184,75 @@ class BxRho(object):
 # MAIN CLASS #
 ##############
 class RateModel(BaseModel):
-    def __init__(self, I, J, ABC, centroids, energies, A_array, shape='Voigt', laser_intensity=80, laser_mode=None, interaction_time=1e-6):
+    def __init__(self, I, J, ABC, centroids, energies, A_array, scale=1.0, shape='Voigt', laser_intensity=80, laser_mode=None, interaction_time=1e-6, fwhmG=0.1, background=0):
         super(RateModel, self).__init__()
         self.I = I
         self.J = J
+        self.A_array = A_array
+        self.laser_intensity = laser_intensity
+        self.shape = shape
+
         self._calculate_F_levels()
+        self._set_energies(energies)
         self._calculate_energy_coefficients()
-        self.energies = energies
-        self.A = A_array
-        self.laser = laser_intensity
+
+        self._params = self._populate_params(laser_intensity, ABC, centroids, shape, scale, fwhmG, interaction_time)
+        self._set_population()
+        self._calculate_A_partial()
+        self._create_D_matrix()
+
+        self.params = self._params
+
+    @property
+    def params(self):
+        return self._params
+
+    @params.setter
+    def params(self, params):
+        self._params = params
+        self._calculate_energy_change()
+        A = np.zeros(self.level_counts_cumsum[-1])
+        for key in self.transition_indices:
+            for x, y in self.transition_indices[key]:
+                A[x, y] = params[key].value
+        A = np.transpose(A) - np.eye(A.shape[0]) * A.sum(axis=1)
+        self.A_array_used = A * self.partial_A
+
+    def _set_energies(self, energies):
+        N = self.level_counts.sum()
+        # Pre-allocate the energy and population vectors.
+        E = np.zeros(N)
+        Nlevcs = self.level_counts.cumsum()
+        for i, (n, ncs) in enumerate(zip(self.level_counts, Nlevcs)):
+            E[ncs - n:ncs] = energies[i]
+        self.energies = E * EV_TO_MHZ
+
+    def _populate_params(self, laser_intensity, ABC, centroids, shape, scale, fwhmG, interaction_time, background):
+        p = lmfit.Parameters()
+        p.add('Laser_intensity_[W/m^2]', value=laser_intensity, min=0, max=None)
+        for i, j in enumerate(J):
+            p.add('A_level_' + str(i), value=ABC[i][0])
+            p.add('B_level_' + str(i), value=ABC[i][1])
+            p.add('C_level_' + str(i), value=ABC[i][2])
+            if not i == len(J)-1:
+                p.add('Centroid_level_' + str(i), value=centroids[i])
+        for i, _ in enumerate(self.level_counts):
+            for j, _ in enumerate(self.level_counts):
+                if i < j and np.isfinite(A_array[i, j]):
+                    p.add('Transition_strength_' + str(i) + '_to_' + str(j), value=A_array[i, j], min=0)
+        p.add('Scale', value=scale)
+        p.add('Interaction_time', value=interaction_time, min=0)
+        if shape == 'Voigt':
+            p.add('FWHMG', value=fwhmG, min=0.0001)
+        p.add('Background', value=background)
+        return p
 
     def _calculate_F_levels(self):
         I = self.I
         J = self.J
+        self.Flist = []
+        self.MFlist = []
+        self.Jlist = []
         dummyJ = np.array([])
         dummyF = np.array([])
         dummyFz = np.array([])
@@ -197,6 +271,9 @@ class RateModel(BaseModel):
             for i, (entry, start) in enumerate(zip(Flen, starts)):
                 mz[start:start + entry] = np.arange(-F[i], F[i] + 1)
                 f[start:start + entry] = F[i]
+            self.Flist.append(f)
+            self.MFlist.append(mz)
+            self.Jlist.append([len(f)]*j)
             dummyF = np.append(dummyF, f)
             dummyFz = np.append(dummyFz, mz)
             dummyJ = np.append(dummyJ, np.ones(len(f))*j)
@@ -205,6 +282,7 @@ class RateModel(BaseModel):
         self.Mf = dummyFz
         self.J = dummyJ
         self.level_counts = dummy
+        self.level_counts_cs = self.level_counts.cumsum()
 
     def _calculate_energy_coefficients(self):
         # Since I, J and F do not change, these factors can be calculated once
@@ -218,252 +296,125 @@ class RateModel(BaseModel):
         E = np.where(np.isfinite(E), E, 0)
         self.A_coeff, self.B_coeff, self.C_coeff = C, D, E
 
-    def _populate_params(self, laser_intensity, ABC, centroids, shape, fwhmG=0.1):
-        p = lmfit.Parameters()
-        p.add('Laser_intensity_[W/m^2]', value=laser_intensity, min=0, max=None)
-        for i, j in enumerate(J):
-            p.add('A_level_' + str(i), value=ABC[i][0])
-            p.add('B_level_' + str(i), value=ABC[i][1])
-            p.add('C_level_' + str(i), value=ABC[i][2])
-            p.add('Centroid_level_' + str(i), value=centroids[i])
-        for i in A_array.shape[0]:
-            for j in A_array.shape[0]:
-                if i < j and np.isfinite(A_array[i, j]):
-                    p.add('Transition_strength_' + str(i) + '_to_' + str(j), value=A_array[i, j], min=0)
-        p.add()
-        if shape=='Voigt':
-            p.add('FWHMG', value=fwhmG, min=0.0001)
-        self.params = p
-
-    @property
-    def params(self):
-        return self._params
-
-    @params.setter
-    def params(self, params):
-        self._params = params
-
     def _calculate_energy_changes(self):
-        A = np.array([])
-        B = np.array([])
-        C = np.array([])
-        centr = np.array([])
-        levels = self.level_counts
-        level_counts_cumsum = np.cumsum(levels)
-        for i, total_levels in enumerate(level_counts_cumsum):
-            if i > 0:
-                level_length = total_levels - level_counts_cumsum[i-1]
-            else:
-                level_length = total_levels
-            A = np.append(A, np.ones(level_length) * self._params['A_level_' + str(i)].value)
-            B = np.append(B, np.ones(level_length) * self._params['B_level_' + str(i)].value)
-            C = np.append(C, np.ones(level_length) * self._params['C_level_' + str(i)].value)
-            centr = np.append(centr, np.ones(level_length) * self._params['Centroid_level_' + str(i)].value)
+        A = np.zeros(self.level_counts.cumsum[-1])
+        B = np.zeros(self.level_counts.cumsum[-1])
+        C = np.zeros(self.level_counts.cumsum[-1])
+        centr = np.zeros(self.level_counts.cumsum[-1])
+        for i, (ncs, n) in enumerate(self.level_counts_cumsum, self.level_counts):
+            A[ncs-n:ncs] = self._params['A_level_' + str(i)].value
+            B[ncs-n:ncs] = self._params['B_level_' + str(i)].value
+            C[ncs-n:ncs] = self._params['C_level_' + str(i)].value
+            centr[ncs-n:ncs] = self._params['Centroid_level_' + str(i)].value
         self.energy_change = centr + self.C * A + self.D * B + self.E * C
 
-    def _calculate_transition_locations(self):
-        self.locations = [self.energy_change[ind_high] - self.energy_change[ind_low] for (ind_low, ind_high) in self.transition_indices]
-
-    def _A(self, excited, ground, Fe, Fg, Mze, Mzg, lifetime):
-        """Calculate the partial Einstein A coefficient.
-
-        Parameters
-        ----------
-        excited: Level
-            Level object for the ground state.
-        ground: Level
-            Level object for the excited state.
-        Fe: integer or half-integer
-            Selected F quantum number in the excited state.
-        Fg: integer or half-integer
-            Selected F quantum number in the ground state.
-        Mze: integer or half-integer
-            Selected projection of F in the excited state.
-        Mzg: integer or half-integer
-            Selected projection of F in the ground state.
-        lifetime: float
-            Mean lifetime of the excited state in seconds.
-
-        Returns
-        -------
-        Aeg: float
-            Partial Einstein A coefficient, in s:sup:`-1`."""
-
-        I = self.spin
-        Jex = excited.J
-        Jgr = ground.J
-        Fe = float(Fe)
-        Fg = float(Fg)
-
-        A = float((2 * Jex + 1) * (2 * Fe + 1) * (2 * Fg + 1))
-        W3 = W3J(Fg, 1.0, Fe, -Mzg, Mzg - Mze, Mze)
-        W6 = W6J(Jgr, Fg, I, Fe, Jex, 1.0)
-        A = A * (W3 ** 2)
-        A = A * (W6 ** 2)
-        A = A / lifetime
-        return A
-
-    def _convertFMftoMIMJ(self, level, F, Mf):
-        """Convert the (F, Mf) quantum numbers to (MI, MJ) quantum numbers
-        using the projection method.
-
-        Parameters
-        ----------
-        level: Level
-            Level object for the relevant level.
-        F, Mf: integer or half-integers
-            Quantum numbers ot be converted.
-
-        Returns
-        -------
-        (Mi, Mj): tuple
-            If a single (F, Mf) couple is given, the converted quantum numbers
-            are returned as a tuple of floats. Otherwise, they are returned as
-            a tuple of arrays."""
-        A = level.A
-        I = self.spin
-        J = level.J
-
-        # Create the array of possible F-values.
-        f = np.arange(np.abs(I - J), I + J + 1)
-
-        # Create grids of MI and MJ
-        I = np.arange(-I, I + 1)
-        J = np.arange(-J, J + 1)
-        I, J = np.meshgrid(I, J)
-
-        # Calculate the total projection
-        mf = I + J
-
-        # Create an equal-size matrix with the correct
-        # F-numbers in each place, depending on the sign of A
-        M = np.zeros(I.shape)
-        for i, val in enumerate(reversed(f)):
-            if np.sign(A) == 1:
-                if i != 0:
-                    M[0:-i, i] = val
-                    M[-i - 1, i:] = val
-                else:
-                    M[:, 0] = val
-                    M[-1, :] = val
-            else:
-                M[i, 0:- 1 - i] = val
-                M[i:, - 1 - i] = val
-
-        # If (F, Mf) contains multiple values, deduce the correct quantum
-        # numbers for each value. If not, only calculate the single value.
-        try:
-            f_select = []
-            m_select = []
-            for f, m in zip(F, Mf):
-                f_select.append(np.isclose(M, f))
-                m_select.append(np.isclose(mf, m))
-            MI = []
-            MJ = []
-            for f, mf in zip(f_select, m_select):
-                MI.append(I[np.bitwise_and(f, mf)][0])
-                MJ.append(J[np.bitwise_and(f, mf)][0])
-            MI = np.array(MI)
-            MJ = np.array(MJ)
-        except:
-            f_select = np.isclose(M, F)
-            m_select = np.isclose(mf, Mf)
-
-            MI = I[np.bitwise_and(f_select, m_select)][0]
-            MJ = J[np.bitwise_and(f_select, m_select)][0]
-
-        return MI, MJ
-
-    def _prepare(self):
-
-        N = self.level_counts.sum()
-        # Pre-allocate the energy and population vectors.
-        E = np.zeros(N)
+    def _set_population(self):
+        N = self.level_counts.cumsum[-1]
         P = np.zeros(N)
         P[N - self.level_counts[-1]:] = 1.0 / self.level_counts[-1]
 
-        # The transition matrices are NxN.
-        A = np.zeros((N, N))
-        # D has to contain BxRho-objects, so dtype='objects'.
-        D = np.zeros((self.n, N, N), dtype='object')
+    def _calculate_A_partial(self):
+        I = self.I
+        J = self.Jlist
+        F = self.Flist
+        Mf = self.MFlist
+        self.partial_A = np.zeros(len(self.F))
+        self.transition_indices = {}
+        for i, _ in enumerate(self.level_counts):
+            for j, _ in enumerate(self.level_counts):
+                if i < j and not np.isclose(self.A_array[i, j], 0):
+                    indices_ex = []
+                    indices_gr = []
+                    for k, (Jex, Fe, Mze) in enumerate(zip(J[i], F[i], Mf[i])):
+                        for l, (Jgr, Fg, Mzg) in enumerate(zip(J[j], F[j], Mf[j])):
+                            A = float((2 * Jex + 1) * (2 * Fe + 1) * (2 * Fg + 1))
+                            W3 = W3J(Fg, 1.0, Fe, -Mzg, Mzg - Mze, Mze)
+                            W6 = W6J(Jgr, Fg, I, Fe, Jex, 1.0)
+                            A = A * (W3 ** 2)
+                            A = A * (W6 ** 2)
+                            x = self.level_counts_cumsum[i] - self.level_counts[i] + k
+                            y = self.level_counts_cumsum[j] - self.level_counts[j] + l
+                            self.partial_A[x, y] = A
+                            indices_ex.append(x)
+                            indices_gr.append(y)
+                    self.transition_indices['Transition_strength_' + str(i) + '_to_' + str(j)] = list(zip(indices_ex, indices_gr))
+        self.partial_A = np.transpose(self.partial_A) - np.eye(self.partial_A.shape[0]) * self.partial_A.sum(axis=1)
 
-        # Calculate I_z from sM.
-        # self.MI = np.array([])
-        # for lev, f, mf in zip(self.levels, F, Mf):
-        #     mi = self._convertFMftoMIMJ(lev, f, mf)[0]
-        #     self.MI = np.append(self.MI, mi)
+    def _create_D_matrix(self):
+        N = self.level_counts_cumsum[-1]
+        D = np.zeros((N, N), dtype='object')
+        bxrho = BxRho_Voigt if self.shape.lower() == 'voigt' else BxRho_Lorentzian
 
-        # Fill the energy vector.
-        Nlevcs = Nlev.cumsum()
-        for n, ncs, l, f, mf in zip(Nlev, Nlevcs, self.levels, F, Mf):
-            E[ncs - n:ncs] = self._energy(l, f, mf)
-        self.Nlevcs = Nlevcs
+        for i, left in enumerate(self.level_counts):
+            for j, right in enumerate(self.level_counts):
+                if i < j and not np.isclose(self.A_array[i, j], 0):
+                    for k, (fe, mze) in enumerate(zip(self.Flist[i], self.MFlist[i])):
+                        for l, (fg, mzg) in enumerate(zip(self.Flist[j], self.MFlist[j])):
+                            x = self.level_counts_cumsum[i] - self.level_counts[i] + k
+                            y = self.level_counts_cumsum[j] - self.level_counts[j] + l
 
-        # Fill the A and D arrays in the correct places.
-
-        #####################################
-        # ASSUMES ENERGY-ORDERED LEVELS!!!! #
-        #####################################
-        # Loop over couples of levels.
-        for i, left in enumerate(self.levels):
-            for j, right in enumerate(self.levels):
-                # Second level has to be lower in energy, so i < j
-                # since the levels are energy-ordered.
-                # This if-condition could be substituted by
-                # looping over the correct levels as the 'right' levels,
-                # but the index number has to be adjusted to something
-                # unintuitive. Since this check does not take a long time
-                # to perform, this has been left in.
-                # Also check if the lifetime is something finite.
-                # If not, skip the calculations.
-                if i < j and not self.lifetime[i, j] == np.inf:
-                    # Loop over the magnetic substates in each level.
-                    for k, (fe, mze) in enumerate(zip(F[i], Mf[i])):
-                        for l, (fg, mzg) in enumerate(zip(F[j], Mf[j])):
-                            # Select the correct indices for the matrices.
-                            x = Nlevcs[i] - Nlev[i] + k
-                            y = Nlevcs[j] - Nlev[j] + l
-                            # Calculate the Einstein A-coefficient.
-                            A[x, y] = self._A(left, right,
-                                              fe, fg, mze, mzg,
-                                              self.lifetime[i, j])
-                            if not np.isclose(A[x, y], 0):
-                                if [fg, fe, E[x]-E[y]] not in self.pos:
-                                    self.pos.append([fg, fe, E[x]-E[y]])
-                            # Fill the D-matrix for each laser.
-                            # The lasers use the first dimension of the array!
-                            for z in range(self.n):
-                                frac = 1.0 if self.mode[z] == (
-                                    mze - mzg) else self.frac
-                                if frac == 0:
-                                    pass
-                                else:
-                                    intensity = frac * self.laser[z]
-                                    tau = 1.0 / self.lifetime[i, j]
-                                    if mze - mzg == 1:  # sigma plus
-                                        D[z, x, y] = BxRho(E[x], E[y],
-                                                           A[x, y],
-                                                           tau,
-                                                           intensity)
-                                    elif mze - mzg == -1:  # sigma minus
-                                        D[z, x, y] = BxRho(E[x], E[y],
-                                                           A[x, y],
-                                                           tau,
-                                                           intensity)
-                                    # linear polarization
-                                    elif mze - mzg == 0:
-                                        D[z, x, y] = BxRho(E[x], E[y],
-                                                           A[x, y],
-                                                           tau,
-                                                           intensity)
-                                    else:
-                                        pass
-
-        # Copy the needed arrays to self.
-        A = np.transpose(A) - np.eye(A.shape[0]) * A.sum(axis=1)
-        self.A = A
+                            frac = 1.0 if self.mode == (mze - mzg) else 0
+                            if frac == 0:
+                                pass
+                            else:
+                                intensity = self._params['Laser_intensity'].value
+                                A = self.A_array[i, j]
+                                mu = (self.energies[k] + self.energy_change[k]) - (self.energies[l] - self.energy_change[l])
+                                kwargs = {'A': A, 'mu': mu, 'laser': intensity}
+                                if self.shape.lower() == 'voigt':
+                                    kwargs['fwhmG'] = self._params['FWHMG'].value
+                                D[x, y] = bxrho(**kwargs)
         self.D = D
-        self.P = P
+
+    def _edit_D_matrix(self):
+        for i, left in enumerate(self.level_counts):
+            for j, right in enumerate(self.level_counts):
+                if i < j and not np.isclose(self.A_array[i, j], 0):
+                    for k, (fe, mze) in enumerate(zip(self.Flist[i], self.MFlist[i])):
+                        for l, (fg, mzg) in enumerate(zip(self.Flist[j], self.MFlist[j])):\
+                            if self.mode == (mze - mzg):
+                                x = self.level_counts_cumsum[i] - self.level_counts[i] + k
+                                y = self.level_counts_cumsum[j] - self.level_counts[j] + l
+
+                                intensity = self._params['Laser_intensity'].value
+                                A = self.A_array_used[x, y]
+                                mu = (self.energies[k] + self.energy_change[k]) - (self.energies[l] - self.energy_change[l])
+                                self.D[x, y].mu = mu
+                                self.D[x, y].A = A
+                                self.D[x, y].laser = intensity
+                                if self.shape.lower() == 'voigt':
+                                    self.D[x, y].fwhmG = self._params['FWHMG'].value
+
+    def _evaluate_matrices(self, f):
+        D = np.zeros(self.D.shape)
+        for i, left in enumerate(self.level_counts):
+            for j, right in enumerate(self.level_counts):
+                if i < j and not np.isclose(self.A_array[i, j], 0):
+                    for k, (fe, mze) in enumerate(zip(self.Flist[i], self.MFlist[i])):
+                        for l, (fg, mzg) in enumerate(zip(self.Flist[j], self.MFlist[j])):\
+                            if self.mode == (mze - mzg):
+                                D[x, y] = self.D[x, y](f)
+        D = np.transpose(D) + D - np.eye(D.shape[0]) * D.sum(axis=1)
+        self.M = self.A_array_used + D
+
+    def _rhsint(self, y, t):
+        """Define the system of ODE's for use in the odeint method from SciPy.
+        Note that the input is (y, t)."""
+        return np.dot(self.M, y)
+
+    def __call__(self, x):
+        try:
+            response = np.array(len(x))
+            for f in x:
+                self._evaluate_matrices(f)
+                dt = self._params['Interaction_time'].value / 400
+                y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))
+                pop1 = np.zeros(len(self.level_counts))
+                pop2 = np.zeros(len(self.level_counts))
+                for i, (n, ncs) in enumerate(zip(self.level_counts, self.level_counts_cumsum)):
+                    pop1[i] = y[-2, ncs-n:ncs].sum()
+                    pop2[i] = y[-1, ncs-n:ncs].sum()
+                decays =
 
 class Polar(object):
 
@@ -522,9 +473,7 @@ class Polar(object):
         Callable object, returns the polarization in percent for a given
         frequency and population of the different levels in percent."""
 
-    def __init__(self, levels, laser, mode, spin, field, lifetimes,
-                 time, steps=400, relaxationtime=0, frac=0,
-                 integrator='odeint', time_dependence=None):
+    def __init__(self, levels, laser, mode, spin, field, lifetimes, time, steps=400, relaxationtime=0, frac=0, integrator='odeint', time_dependence=None):
         super(Polar, self).__init__()
 
         # Set all parameters for preparation of the A and D matrices
