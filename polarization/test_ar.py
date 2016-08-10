@@ -3,7 +3,7 @@ import numpy as np
 from polarization.polar import Polar
 from polarization.utilities import Level, Energy
 import pandas as pd
-from satlasaddon import RateModelPolar
+from satlasaddon import RateModelPolar, RateModelDecay
 EV_TO_MHZ = 2.417989348 * 10 ** 8
 
 lev1 = Level(13.09487199, (125.7, 81.6), 2.5, 0.5, 2.0)
@@ -35,23 +35,24 @@ levs = levsSimple
 lifetimesSelected = lifetimesSimple
 populationSelected = populationSimple
 
-laser_intensity = 125  # W/m^2
-field = 0 * 10 ** (-3)  # T
+efficiency = 1.0 / 50000
+laser_intensity = 125*2  # W/m^2
+field = 10 * 10 ** (-4)  # T
 laser_mode = 1
 I = 3.0 / 2
-L_simple = [2.5, 1.5, 0.5]
+L_simple = [2.5, 1.5]
 L_full = [2.5, 2.5, 0.5, 0.5, 0.5, 1.5, 1.5, 0.5]
-J_simple = [3.0, 2.0, 0.0]
+J_simple = [3.0, 2.0]
 J_full = [2.0, 3.0, 1.0, 1.0, 0.0, 1.0, 2.0, 0.0]
-ABC_simple = [[125.7, 81.6, 0], [266.0, 84.8, 0], [100, 0, 0]]
+ABC_simple = [[125.7, 81.6, 0], [266.0, 84.8, 0]]
 ABC_full = [[125.7, 81.6, 0.0], [125.7, 81.6, 0.0], [125.7, 81.6, 0.0], [266.0, 84.8, 0.0], [266.0, 0.0, 0.0], [266.0, 84.8, 0.0], [266.0, 84.8, 0.0], [0.0, 0.0, 0.0]]
 
-level_energies_simple = [13.07571514, 11.54835392, 0]
+level_energies_simple = [13.07571514, 11.54835392]
 level_energies_full = [13.09487199, 13.07571514, 12.90701474, 11.82807064, 11.72315988, 11.62359221, 11.54835392, 0]
 
-centroids_simple = [0, 0, 0, 0]
+centroids_simple = [0]
 centroids_full = [0]*(len(level_energies_full)-1)
-A_array_simple = np.array([[0, 3.3e7, 0], [0, 0, 0], [0, 0, 0]])
+A_array_simple = np.array([[0, 3.3e7], [0, 0]])
 A_array_full = lifetimesFull**-1
 
 J = J_simple
@@ -61,80 +62,98 @@ level_energies = level_energies_simple
 centroids = centroids_simple
 A_array = A_array_simple
 
-diff = Energy(1.52736122, unit='eV')
-f_st = diff('MHz')
+f_st = np.abs(np.diff(level_energies_simple)) * EV_TO_MHZ
 
-f1 = -247.682945669
-f2 = 130.667053759
-f3 = 78.2270541787
-f1 = 130.667053759
-f2 = 331.277053893
+f1 = -246.285305858
+f2 = 132.06469357
+f3 = 79.6246939898
+
+df1 = f2 - f1
+df2 = f3 - f1
 
 mass = 34.9752576
 AMU_TO_KG = 1.66053904 * 10**(-27)
 mass = mass * AMU_TO_KG
 EV_TO_J = 1.60217662 * 10**(-19)
-energies = [30*(10**3), 40*(10**3), 50*(10**3)]
-energies = [50*(10**3)]
-lengths = [1.5]#, 1.6, 1.7, 1.8, 1.9]
-lasers = ['1 laser', '1 laser + 1 AOM', '1 laser + 2 AOMS']
-# intensities = np.arange(10, 110, 10)
-intensities = [125]
-freqLen = 1901
-f = np.arange(-1400, 501, 1)
-columns = pd.MultiIndex.from_product([lasers, intensities, energies, lengths], names=['Lasers', 'Laser intensity', 'Energy', 'Interaction length'])
-data = pd.DataFrame(index=f, columns=columns)
 
-e = energies[0]
-l = lengths[0]
+e = 30 * 10**3
+l_pumping = 1.5
+l_optical_detection = 0.2
 energy = e * EV_TO_J
 velocity = np.sqrt(2 * energy / mass)
-tof = l / velocity
-model = RateModelPolar(I, J, L, ABC, centroids, level_energies, A_array, laser_intensity=[laser_intensity], scale=100, laser_mode=[laser_mode], shape='lorentzian', interaction_time=tof)#, fixed_frequencies=[f1 + f_st, f2+f_st])
-model._set_population(level=[-3, -2])
-locs = model.locations - f_st
-# freqs = np.arange(locs.min() - 100, locs.max() + 100, 5)
-freqs = np.arange(-1400, 505, 5) + f_st
-print(model.P)
+tof_pump = l_pumping / velocity
+tof_optical = l_optical_detection / velocity
+
+step = 1
+freqs = np.arange(-1400, 500 + step, step) + f_st
+
+args = (I, J, L, ABC, centroids, level_energies, A_array)
+kwargs3 = {'laser_intensity': [laser_intensity]*3,
+'scale': 100,
+'laser_mode': [laser_mode]*3,
+'shape': 'voigt',
+'fwhmG': 50,
+'interaction_time': tof_pump,
+'fixed_frequencies': [df1, df2],
+'frequency_mode': 'offset',
+'field': field}
+kwargs = {'laser_intensity': [laser_intensity],
+'scale': 100,
+'laser_mode': [laser_mode],
+'shape': 'voigt',
+'fwhmG': 50,
+'interaction_time': tof_pump,
+'frequency_mode': 'offset',
+'field': field}
+model_pump = RateModelPolar(*args, **kwargs3)
+try:
+    model_pump._set_population(level=[-5, -4, -3, -2])
+except:
+    pass
+kwargs3['interaction_time'] = tof_optical
+kwargs3['laser_intensity'] = [5]*3
+kwargs3['scale'] = 1 * efficiency
+model_optical = RateModelDecay(*args, **kwargs3)
+try:
+    model_optical._set_population(level=[-5, -4, -3, -2])
+except:
+    pass
+
+resp_pump3 = model_pump(freqs)
+resp_optical3 = model_optical(freqs)
+
+model_pump = RateModelPolar(*args, **kwargs)
+try:
+    model_pump._set_population(level=[-5, -4, -3, -2])
+except:
+    pass
+kwargs['interaction_time'] = tof_optical
+kwargs['laser_intensity'] = [5]
+kwargs['scale'] = 1 * efficiency
+model_optical = RateModelDecay(*args, **kwargs)
+try:
+    model_optical._set_population(level=[-5, -4, -3, -2])
+except:
+    pass
+
+resp_pump = model_pump(freqs)
+resp_optical = model_optical(freqs)
+
 import matplotlib.pyplot as plt
+import satlas as sat
+sat.set(['standard', 'online'])
+fig, ax = plt.subplots(2, 2, sharex=True)
+ax[0, 0].plot(freqs - f_st, resp_pump)
+ax[1, 0].plot(freqs - f_st, resp_optical)
+ax[0, 1].plot(freqs - f_st, resp_pump3)
+ax[1, 1].plot(freqs - f_st, resp_optical3)
 
-fig, ax = plt.subplots(1, 1)
-resp = model(freqs)
-ax.plot(freqs - f_st, resp)
-# print(resp)
+ax[0, 0].set_ylabel('Polarisation [%]')
+ax[1, 0].set_ylabel('Decay rate/atom [Hz]')
+import scipy.constants as csts
+C = csts.physical_constants['speed of light in vacuum'][0]
+f_st = f_st[0] * 1e6
+ax[1, 0].set_xlabel('Frequency offset from {:.5f} nm [MHz]'.format(C/f_st * 1e9))
+ax[0, 0].set_title('Single laser')
+ax[0, 1].set_title('Single laser + 2 AOMs at {:.2f} and {:.2f} MHz'.format(df1, df2))
 plt.show()
-
-# for e in energies:
-#     for l in lengths:
-#         for intensity in intensities:
-#             print(e, l, intensity)
-
-#             testN = Polar(levs, intensity,
-#                           laser_mode, spin, field,
-#                           lifetimesSelected, tof)
-#             testN.changeInitialPopulation(populationSelected)
-#             las = f + f_st
-#             # for fg, fe, pos in testN.pos:
-#             #     print(fg, fe, pos-f_st)
-#             # raise ValueError
-#             y = testN(las)
-#             data[lasers[0], intensity, e, l] = y[:, 0]
-
-#             testN = Polar(levs, [intensity, intensity],
-#                           [laser_mode, laser_mode], spin, field,
-#                           lifetimesSelected, tof)
-#             testN.changeInitialPopulation(populationSelected)
-#             las = (f + f_st, f1 + f_st)
-#             y = testN(*las)
-#             data[lasers[1], intensity, e, l] = y[:, 0]
-
-#             testN = Polar(levs, [intensity, intensity, intensity],
-#                           [laser_mode, laser_mode, laser_mode], spin, field,
-#                           lifetimesSelected, tof)
-#             testN.changeInitialPopulation(populationSelected)
-#             las = (f + f_st, f1 + f_st, f2 + f_st)
-#             y = testN(*las)
-#             data[lasers[2], intensity, e, l] = y[:, 0]
-
-# data = data.T
-data.to_pickle('Simul_multi_positive_10mW.data')

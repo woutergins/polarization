@@ -137,7 +137,7 @@ class BxRho_Lorentzian(Lorentzian):
 # MAIN CLASS #
 ##############
 class RateModel(BaseModel):
-    def __init__(self, I, J, L, ABC, centroids, energies, A_array, scale=1.0, shape='Voigt', laser_intensity=80, laser_mode=None, interaction_time=1e-6, fwhmG=0.1, fwhmL=None, background=0, field=0, fixed_frequencies=None):
+    def __init__(self, I, J, L, ABC, centroids, energies, A_array, scale=1.0, shape='Voigt', laser_intensity=80, laser_mode=None, interaction_time=1e-6, fwhmG=0.1, fwhmL=None, background=0, field=0, fixed_frequencies=None, frequency_mode='fixed'):
         super(RateModel, self).__init__()
         self.I = I
         self.J = J
@@ -155,6 +155,7 @@ class RateModel(BaseModel):
         else:
             self.fixed_frequencies = []
         self.vary_freqs = len(laser_intensity) - len(self.fixed_frequencies)
+        self.frequency_mode = frequency_mode
 
         self.laser_intensity = laser_intensity
         self.mode = laser_mode
@@ -198,7 +199,7 @@ class RateModel(BaseModel):
             E[ncs - n:ncs] = energies[i]
         self.energies = E * EV_TO_MHZ
 
-    def _populate_params(self, laser_intensity, ABC, centroids, shape, scale, fwhmG, fwhmL, interaction_time, background, field):
+    def _populate_params(self, laser_intensity, ABC, centroids, shape, scale, fwhmG, FWHML, interaction_time, background, field):
         p = lmfit.Parameters()
         for i, val in enumerate(laser_intensity):
             p.add('Laser_intensity_' + str(i), value=val, min=0, max=None)
@@ -214,7 +215,7 @@ class RateModel(BaseModel):
             for j, _ in enumerate(self.level_counts):
                 if i < j and np.isfinite(self.A_array[i, j]):
                     p.add('Transition_strength_' + str(i) + '_to_' + str(j), value=self.A_array[i, j], min=0, vary=False)
-                    fwhmL = self.A_array[i, j]/(2*PI)*1e-6 if fwhmL is None else fwhmL
+                    fwhmL = self.A_array[i, j]/(2*PI)*1e-6 if FWHML is None else FWHML
                     p.add('FWHML_' + str(i) + '_to_' + str(j), value=fwhmL, min=0)
                     if shape.lower() == 'voigt':
                         par_lor_name = 'FWHML_' + str(i) + '_to_' + str(j)
@@ -330,12 +331,11 @@ class RateModel(BaseModel):
             levels = 1
             level = [level]
         total_number = sum(self.level_counts[level])
+        P = np.zeros(self.level_counts_cs[-1])
         for lev in level:
             N = self.level_counts_cs[lev]
-            P = np.zeros(self.level_counts_cs[-1])
             P[N - self.level_counts[lev]:N] = 1.0 / total_number
         self.P = P
-        # self.P = np.ones(len(P)) / self.level_counts_cs[-1]
 
     def _calculate_A_partial(self):
         I = self.I
@@ -423,6 +423,9 @@ class RateModel(BaseModel):
                 freq = f
             else:
                 freq = self.fixed_frequencies[laser_index - self.vary_freqs]
+                if self.frequency_mode.lower() == 'offset':
+                    freq += f
+
             D[i, j, laser_index] = self.D[i, j, laser_index](freq)
 
         D = D.sum(axis=2)
