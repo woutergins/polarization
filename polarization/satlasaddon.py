@@ -137,14 +137,26 @@ class BxRho_Lorentzian(Lorentzian):
 # MAIN CLASS #
 ##############
 class RateModel(BaseModel):
-    def __init__(self, I, J, L, ABC, centroids, energies, A_array, scale=1.0, shape='Voigt', laser_intensity=80, laser_mode=None, interaction_time=1e-6, fwhmG=0.1, fwhmL=None, background=0, field=0):
+    def __init__(self, I, J, L, ABC, centroids, energies, A_array, scale=1.0, shape='Voigt', laser_intensity=80, laser_mode=None, interaction_time=1e-6, fwhmG=0.1, fwhmL=None, background=0, field=0, fixed_frequencies=None):
         super(RateModel, self).__init__()
         self.I = I
         self.J = J
         self.L = L
         self.A_array = A_array
-        self.laser_intensity = laser_intensity
         self.shape = shape
+
+        try:
+            lasers = len(laser_intensity)
+        except:
+            laser_intensity = [laser_intensity]
+            laser_mode = [laser_mode]
+        if fixed_frequencies is not None:
+            self.fixed_frequencies = fixed_frequencies
+        else:
+            self.fixed_frequencies = []
+        self.vary_freqs = len(laser_intensity) - len(self.fixed_frequencies)
+
+        self.laser_intensity = laser_intensity
         self.mode = laser_mode
 
         self._calculate_F_levels()
@@ -174,6 +186,7 @@ class RateModel(BaseModel):
         A = A * self.partial_A
         A = np.transpose(A) - np.eye(A.shape[0]) * A.sum(axis=1)
         self.A_array_used = A
+        self.decay_matrix = np.abs(self.A_array_used * np.eye(self.A_array_used.shape[0]))
         self._edit_D_matrix()
 
     def _set_energies(self, energies):
@@ -187,7 +200,8 @@ class RateModel(BaseModel):
 
     def _populate_params(self, laser_intensity, ABC, centroids, shape, scale, fwhmG, fwhmL, interaction_time, background, field):
         p = lmfit.Parameters()
-        p.add('Laser_intensity', value=laser_intensity, min=0, max=None)
+        for i, val in enumerate(laser_intensity):
+            p.add('Laser_intensity_' + str(i), value=val, min=0, max=None)
         for i, j in enumerate(self.Jlist):
             p.add('A_level_' + str(i), value=ABC[i][0])
             p.add('B_level_' + str(i), value=ABC[i][1])
@@ -310,10 +324,18 @@ class RateModel(BaseModel):
         self.energy_change = centr + self.A_coeff * A + self.B_coeff * B + self.C_coeff * C + self.field_coeff * field
 
     def _set_population(self, level=-1):
-        N = self.level_counts_cs[level]
-        P = np.zeros(self.level_counts_cs[-1])
-        P[N - self.level_counts[level]:N] = 1.0 / self.level_counts[level]
+        try:
+            levels = len(level)
+        except:
+            levels = 1
+            level = [level]
+        total_number = sum(self.level_counts[level])
+        for lev in level:
+            N = self.level_counts_cs[lev]
+            P = np.zeros(self.level_counts_cs[-1])
+            P[N - self.level_counts[lev]:N] = 1.0 / total_number
         self.P = P
+        # self.P = np.ones(len(P)) / self.level_counts_cs[-1]
 
     def _calculate_A_partial(self):
         I = self.I
@@ -344,22 +366,23 @@ class RateModel(BaseModel):
 
     def _create_D_matrix(self):
         N = self.level_counts_cs[-1]
-        D = np.zeros((N, N), dtype='object')
+        D = np.zeros((N, N, len(self.laser_intensity)), dtype='object')
         bxrho = BxRho_Voigt if self.shape.lower() == 'voigt' else BxRho_Lorentzian
 
         self.indices = []
-        for i, j in itertools.combinations(range(len(self.level_counts)), 2):
-            if not np.isclose(self.A_array[i, j], 0):
+        for laser_index, laser in enumerate(self.laser_intensity):
+            for i, j in itertools.combinations(range(len(self.level_counts)), 2):
                 for k, (fe, mze) in enumerate(zip(self.Flist[i], self.MFlist[i])):
                     for l, (fg, mzg) in enumerate(zip(self.Flist[j], self.MFlist[j])):
                         x = self.level_counts_cs[i] - self.level_counts[i] + k
                         y = self.level_counts_cs[j] - self.level_counts[j] + l
-
-                        frac = 1.0 if self.mode == (mze - mzg) else 0
+                        if np.isclose(self.A_array[i, j], 0) or np.isclose(self.partial_A[x, y], 0):
+                            continue
+                        frac = 1.0 if self.mode[laser_index] == (mze - mzg) else 0
                         if frac == 0:
                             pass
                         else:
-                            intensity = self._params['Laser_intensity'].value
+                            intensity = self._params['Laser_intensity_' + str(laser_index)].value
                             A = self._params['Transition_strength_' + str(i) + '_to_' + str(j)].value
                             mu = (self.energies[k] + self.energy_change[k]) - (self.energies[l] + self.energy_change[l])
                             kwargs = {'A': A, 'mu': mu, 'laser': intensity}
@@ -368,32 +391,41 @@ class RateModel(BaseModel):
                                 kwargs['fwhmL'] = self._params['FWHML_' + str(i) + '_to_' + str(j)].value * 1e6
                             else:
                                 kwargs['fwhm'] = self._params['FWHML_' + str(i) + '_to_' + str(j)].value * 1e6
-                            D[x, y] = bxrho(**kwargs)
-                            self.indices.append((x, y, i, j))
+                            D[x, y, laser_index] = bxrho(**kwargs)
+                            self.indices.append((x, y, laser_index, i, j))
 
         self.D = D
 
     def _edit_D_matrix(self):
         self.locations = []
-        for x, y, i, j in self.indices:
-            intensity = self._params['Laser_intensity'].value
+        self.transitions = []
+        for x, y, laser_index, i, j in self.indices:
+            intensity = self._params['Laser_intensity_' + str(laser_index)].value
             A = self.A_array_used[y, x]
             mu = (self.energies[x] + self.energy_change[x]) - (self.energies[y] + self.energy_change[y])
-            self.D[x, y].mu = mu
-            self.D[x, y].A = A
+            self.D[x, y, laser_index].mu = mu
+            self.D[x, y, laser_index].A = A
             if self.shape.lower() == 'voigt':
-                self.D[x, y].gaussian = self._params['FWHMG_' + str(i) + '_to_' + str(j)].value * 1e6
-                self.D[x, y].lorentzian = self._params['FWHML_' + str(i) + '_to_' + str(j)].value * 1e6
+                self.D[x, y, laser_index].gaussian = self._params['FWHMG_' + str(i) + '_to_' + str(j)].value * 1e6
+                self.D[x, y, laser_index].lorentzian = self._params['FWHML_' + str(i) + '_to_' + str(j)].value * 1e6
             else:
-                self.D[x, y].fwhm = self._params['FWHML_' + str(i) + '_to_' + str(j)].value * 1e6
-            self.D[x, y].laser = intensity
+                self.D[x, y, laser_index].fwhm = self._params['FWHML_' + str(i) + '_to_' + str(j)].value * 1e6
+            self.D[x, y, laser_index].laser = intensity
             self.locations.append(mu)
-        self.locations = np.unique(np.array(self.locations))
+            self.transitions.append((self.F[x], self.F[y]))
+        self.locations, indices = np.unique(np.array(self.locations), return_index=True)
+        self.transitions = np.array(self.transitions)[indices]
 
     def _evaluate_matrices(self, f):
         D = np.zeros(self.D.shape)
-        for i, j, _, _ in self.indices:
-            D[i, j] = self.D[i, j](f)
+        for i, j, laser_index, _, _ in self.indices:
+            if laser_index < self.vary_freqs:
+                freq = f
+            else:
+                freq = self.fixed_frequencies[laser_index - self.vary_freqs]
+            D[i, j, laser_index] = self.D[i, j, laser_index](freq)
+
+        D = D.sum(axis=2)
         D = np.transpose(D) + D
         D = D - np.eye(D.shape[0]) * D.sum(axis=1)
         self.M = self.A_array_used + D
@@ -403,6 +435,9 @@ class RateModel(BaseModel):
         Note that the input is (y, t)."""
         return np.dot(self.M, y)
 
+    def _process_population(self, y):
+        raise NotImplementedError('Function should be implemented in child classes!')
+
     def __call__(self, x):
         try:
             response = np.zeros(len(x))
@@ -410,15 +445,17 @@ class RateModel(BaseModel):
                 self._evaluate_matrices(f)
                 dt = self._params['Interaction_time'].value / 400
                 y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))[-1, :]
-                decay = np.abs(self.A_array_used * np.eye(self.A_array_used.shape[0]))
-                response[i] = np.dot(decay, y).sum()
+                response[i] = self._process_population(y)
         except:
             self._evaluate_matrices(x)
             dt = self._params['Interaction_time'].value / 400
             y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))[-1, :]
-            decay = np.abs(self.A_array_used * np.eye(self.A_array_used.shape[0]))
-            response = np.dot(decay, y).sum()
+            response = self._process_population(y)
         return self._params['Scale'].value * response + self._params['Background'].value
+
+class RateModelDecay(RateModel):
+    def _process_population(self, y):
+        return np.dot(self.decay_matrix, y).sum()
 
 class RateModelPolar(RateModel):
     def __init__(self, *args, **kwargs):
@@ -476,17 +513,5 @@ class RateModelPolar(RateModel):
             self.MI = np.append(self.MI, np.array(MI))
             self.MJ = np.append(self.MJ, np.array(MJ))
 
-    def __call__(self, x):
-        try:
-            response = np.zeros(len(x))
-            for i, f in enumerate(x):
-                self._evaluate_matrices(f)
-                dt = self._params['Interaction_time'].value / 400
-                y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))[-1, :]
-                response[i] = (np.dot(self.MI, y) / self.I)
-        except:
-            self._evaluate_matrices(x)
-            dt = self._params['Interaction_time'].value / 400
-            y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))[-1, :]
-            response = (np.dot(self.MI, y) / self.I)
-        return self._params['Scale'].value * response + self._params['Background'].value
+    def _process_population(self, y):
+        return np.dot(self.MI, y) / self.I
