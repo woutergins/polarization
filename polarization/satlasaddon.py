@@ -432,6 +432,7 @@ class RateModel(BaseModel):
         D = np.transpose(D) + D
         D = D - np.eye(D.shape[0]) * D.sum(axis=1)
         self.M = self.A_array_used + D
+        self.decay_matrix = np.abs(np.diag(np.diag(self.M)))
 
     def _rhsint(self, y, t):
         """Define the system of ODE's for use in the odeint method from SciPy.

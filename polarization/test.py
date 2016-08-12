@@ -1,4 +1,4 @@
-from satlasaddon import RateModel, RateModelPolar
+from satlasaddon import RateModelDecay, RateModelPolar
 import satlas as sat
 sat.set(['standard'])
 import numpy as np
@@ -14,14 +14,14 @@ I = 0.5
 J = [0.5, 0.5]
 L = [0, 1]
 laser_intensity = 50
-scale = 1/50000
+scale = -1
 import time
-laser_mode = -1
+laser_mode = 1
 centroids = [5852]
 
 background = 0
 
-model = RateModel(I, J, L, ABC, centroids, energies, A_array, laser_intensity=laser_intensity, scale=scale, laser_mode=laser_mode, interaction_time=1e-6, background=background, shape='voigt', field=0.0)
+model = RateModelPolar(I, J, L, ABC, centroids, energies, A_array, laser_intensity=laser_intensity, scale=scale, laser_mode=laser_mode, interaction_time=5e-6, background=background, shape='voigt', field=10*10**-4)
 
 frequencies = np.arange(model.locations.min()-500, model.locations.max()+500, 5)
 f_trans = energies[0] * EV_TO_MHZ

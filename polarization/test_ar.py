@@ -47,12 +47,12 @@ A_array_full = np.array([[0, 0, 0, 1.47e+06,   0,         2.15e+07,  9.28e+06,  
                          [0, 0, 0, 0,          0,         0,         0,         1.19e+08],
                          [0, 0, 0, 0,          0,         0,         0,         0]])
 
-J = J_full
-L = L_full
-ABC = ABC_full
-level_energies = level_energies_full
-centroids = centroids_full
-A_array = A_array_full
+J = J_simple
+L = L_simple
+ABC = ABC_simple
+level_energies = level_energies_simple
+centroids = centroids_simple
+A_array = A_array_simple
 
 f_st = np.abs(np.diff(level_energies_simple)) * EV_TO_MHZ
 
@@ -146,6 +146,6 @@ ax[1, 0].set_xlabel('Frequency offset from {:.5f} nm [MHz]'.format(C/f_st * 1e9)
 ax[0, 0].set_title('Single laser')
 ax[0, 1].set_title('Single laser + 2 AOMs at {:.2f} and {:.2f} MHz'.format(df1, df2))
 
-fig.savefig('Ar_simulation_full_{}.pdf'.format(kwargs['fwhmL']), bbox_inches='tight')
+# fig.savefig('Ar_simulation_full_{}.pdf'.format(kwargs['fwhmL']), bbox_inches='tight')
 
-# plt.show()
+plt.show()
