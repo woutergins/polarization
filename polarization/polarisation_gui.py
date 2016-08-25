@@ -35,13 +35,14 @@ class ControllerApp(QtGui.QMainWindow):
         self.console = console.ConsoleWidget()
         self.central.addWidget(self.console)
 
-    def create_plot_tab():
+    def create_plot_tab(self):
+        pass
 
 def main():
-    # add freeze support
     app = QtGui.QApplication(sys.argv)
     m = ControllerApp()
     sys.exit(app.exec_())
+    # add freeze support
 
 
 if __name__ == "__main__":

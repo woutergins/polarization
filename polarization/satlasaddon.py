@@ -223,6 +223,8 @@ class RateModel(BaseModel):
                         expr = '0.5346*{0}+(0.2166*{0}**2+{1}**2)**0.5'
                         p.add('FWHMG_' + str(i) + '_to_' + str(j), value=fwhmG, min=0.0001)
                         p.add('TotalFWHM_' + str(i) + '_to_' + str(j), value=0, vary=False, expr=expr.format(par_lor_name, par_gauss_name))
+                    else:
+                        p.add('FWHMG', value=fwhmG, vary=fwhmG > 0, min=0)
         p.add('Scale', value=scale)
         p.add('Interaction_time', value=interaction_time, min=0)
         p.add('Background', value=background)
@@ -442,20 +444,41 @@ class RateModel(BaseModel):
     def _process_population(self, y):
         raise NotImplementedError('Function should be implemented in child classes!')
 
-    def __call__(self, x):
+    def __call__(self, x, convolve=False):
         try:
-            response = np.zeros(len(x))
-            for i, f in enumerate(x):
+            response = np.zeros(x.size)
+            for i, f in enumerate(x.flatten()):
                 self._evaluate_matrices(f)
                 dt = self._params['Interaction_time'].value / 400
                 y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))[-1, :]
                 response[i] = self._process_population(y)
+            response = response.reshape(x.shape)
         except:
             self._evaluate_matrices(x)
             dt = self._params['Interaction_time'].value / 400
             y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))[-1, :]
             response = self._process_population(y)
-        return self._params['Scale'].value * response + self._params['Background'].value
+        response = self._params['Scale'].value * response + self._params['Background'].value
+        try:
+            if not convolve:
+                if self._params['FWHMG'].value > 0 and not self.shape.lower() == 'voigt':
+                    response = self._convolve_with_gaussian(x, response, sigma=self._params['FWHMG'].value / (2*(2*np.log(2))**0.5))
+        except:
+            pass
+        return response
+
+    def _convolve_with_gaussian(self, x, y, sigma=1):
+        # Dumb implementation: calculate at several steps, take sums weighted by gaussian distribution
+        theta = np.linspace(-5, 5, 50)
+        x_grid, theta_grid = np.meshgrid(x, theta)
+        x_grid = x_grid + sigma * theta_grid
+        print('convolving')
+        y_grid = self(x_grid, convolve=True)
+        print('convolved')
+        sqrt2pi = np.sqrt(2*np.pi)
+        weights = np.exp(-0.5 * theta * theta / sigma**0.5) / (sigma * sqrt2pi)
+        integral_value = np.average(y_grid, axis=0, weights=weights)
+        return integral_value
 
 class RateModelDecay(RateModel):
     def _process_population(self, y):

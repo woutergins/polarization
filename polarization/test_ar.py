@@ -10,15 +10,19 @@ EV_TO_MHZ = csts.physical_constants['electron volt-hertz relationship'][0] * 1e-
 AMU_TO_KG = csts.physical_constants['atomic mass unit-kilogram relationship'][0]
 EV_TO_J = csts.physical_constants['electron volt-joule relationship'][0]
 
-efficiency = 1.0 / 50000
+efficiency = 1.0 / 50000000
 area = 0.8 #cm^2
-laser_power_pump = 10 #mW
-laser_power_optical = 10 #mW
+laser_power_pump = 100 #mW
+laser_power_pump_AOM_1 = 50 #mW
+laser_power_pump_AOM_2 =  0*10 #mW
+laser_power_optical = 100 #mW
 laser_intensity_pump = laser_power_pump / area * 10  # W/m^2
+laser_intensity_pump_AOM_1 = laser_power_pump_AOM_1 / area * 10  # W/m^2
+laser_intensity_pump_AOM_2 = laser_power_pump_AOM_2 / area * 10  # W/m^2
 laser_intensity_optical = laser_power_optical / area * 10  # W/m^2
 laser_mode = 1
 
-field = 10 * 10 ** (-4)  # T
+field = 0 * 10 ** (-4)  # T
 
 I = 3.0 / 2
 
@@ -60,7 +64,7 @@ f1 = -246.285305858
 f2 = 132.06469357
 f3 = 79.6246939898
 
-df1 = f2 - f1
+df1 = -(f2 - f1)
 df2 = f3 - f1
 
 mass = 34.9752576
@@ -83,15 +87,15 @@ kwargs = {'laser_intensity': [laser_intensity_pump],
           'scale': 100,
           'laser_mode': [laser_mode],
           'shape': 'lorentzian',
-          'fwhmL': 50,
+          'fwhmG': 50,
           'interaction_time': tof_pump,
           'frequency_mode': 'offset',
           'field': field}
-kwargs3 = {'laser_intensity': [laser_intensity_pump]*3,
+kwargs3 = {'laser_intensity': [laser_intensity_pump, laser_intensity_pump_AOM_1, laser_intensity_pump_AOM_2],
            'scale': 100,
            'laser_mode': [laser_mode]*3,
            'shape': 'lorentzian',
-           'fwhmL': 50,
+           'fwhmG': 50,
            'interaction_time': tof_pump,
            'fixed_frequencies': [df1, df2],
            'frequency_mode': 'offset',
@@ -113,7 +117,7 @@ except:
     pass
 
 resp_pump3 = model_pump(freqs)
-resp_optical3 = model_optical(freqs)
+# resp_optical3 = model_optical(freqs)
 
 # Next, calculate with just 1 laser
 model_pump = RateModelPolar(*args, **kwargs)
@@ -131,13 +135,13 @@ except:
     pass
 
 resp_pump = model_pump(freqs)
-resp_optical = model_optical(freqs)
+# resp_optical = model_optical(freqs)
 
 fig, ax = plt.subplots(2, 2, sharex=True)
 ax[0, 0].plot(x_plot, resp_pump)
-ax[1, 0].plot(x_plot, resp_optical)
+# ax[1, 0].plot(x_plot, resp_optical)
 ax[0, 1].plot(x_plot, resp_pump3)
-ax[1, 1].plot(x_plot, resp_optical3)
+# ax[1, 1].plot(x_plot, resp_optical3)
 
 ax[0, 0].set_ylabel('Polarisation [%]')
 ax[1, 0].set_ylabel('Decay rate/atom [Hz]')
