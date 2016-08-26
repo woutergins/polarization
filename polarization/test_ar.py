@@ -4,18 +4,21 @@ import satlas as sat
 from satlasaddon import RateModelPolar, RateModelDecay
 import scipy.constants as csts
 
-sat.set(['standard', 'online'])
+sat.set(['standard'])
 C = csts.physical_constants['speed of light in vacuum'][0]
 EV_TO_MHZ = csts.physical_constants['electron volt-hertz relationship'][0] * 1e-6
 AMU_TO_KG = csts.physical_constants['atomic mass unit-kilogram relationship'][0]
 EV_TO_J = csts.physical_constants['electron volt-joule relationship'][0]
+
+beam_energy = 30e3
+beam_energy *= EV_TO_J
 
 efficiency = 1.0 / 50000000
 area = 0.8 #cm^2
 laser_power_pump = 100 #mW
 laser_power_pump_AOM_1 = 50 #mW
 laser_power_pump_AOM_2 =  0*10 #mW
-laser_power_optical = 100 #mW
+laser_power_optical = 1 #mW
 laser_intensity_pump = laser_power_pump / area * 10  # W/m^2
 laser_intensity_pump_AOM_1 = laser_power_pump_AOM_1 / area * 10  # W/m^2
 laser_intensity_pump_AOM_2 = laser_power_pump_AOM_2 / area * 10  # W/m^2
@@ -68,15 +71,21 @@ df1 = -(f2 - f1)
 df2 = f3 - f1
 
 mass = 34.9752576
-mass = mass * AMU_TO_KG
+mass *= AMU_TO_KG
+velocity = np.sqrt(2 * beam_energy / mass)
 
-e = 50 * 10**3
-l_pumping = 1.9
-l_optical_detection = 0.2
-energy = e * EV_TO_J
-velocity = np.sqrt(2 * energy / mass)
-tof_pump = l_pumping / velocity
-tof_optical = l_optical_detection / velocity
+detection_length = 100e-3
+detection_tof = detection_length / velocity
+
+interaction_length_optical = 20e-2
+interaction_tof_optical = interaction_length_optical / velocity
+
+interaction_length_polar = 1.5
+interaction_tof_polar = interaction_length_polar / velocity
+
+geometrical_efficiency = 14.941971804041613 / 100
+quantum_efficiency = 0.05
+scale = geometrical_efficiency * quantum_efficiency
 
 step = 1
 freqs = np.arange(-1400, 500 + step, step) + f_st
@@ -87,16 +96,16 @@ kwargs = {'laser_intensity': [laser_intensity_pump],
           'scale': 100,
           'laser_mode': [laser_mode],
           'shape': 'lorentzian',
-          'fwhmG': 50,
-          'interaction_time': tof_pump,
+          'fwhmG': 0,
+          'interaction_time': interaction_tof_polar,
           'frequency_mode': 'offset',
           'field': field}
 kwargs3 = {'laser_intensity': [laser_intensity_pump, laser_intensity_pump_AOM_1, laser_intensity_pump_AOM_2],
            'scale': 100,
            'laser_mode': [laser_mode]*3,
            'shape': 'lorentzian',
-           'fwhmG': 50,
-           'interaction_time': tof_pump,
+           'fwhmG': 0,
+           'interaction_time': interaction_tof_polar,
            'fixed_frequencies': [df1, df2],
            'frequency_mode': 'offset',
            'field': field}
@@ -107,9 +116,9 @@ try:
     model_pump._set_population(level=[-5, -4, -3, -2])
 except:
     pass
-kwargs3['interaction_time'] = tof_optical
+kwargs3['interaction_time'] = interaction_tof_optical
 kwargs3['laser_intensity'] = [laser_intensity_optical]*3
-kwargs3['scale'] = 1 * efficiency
+kwargs3['scale'] = 1 * scale
 model_optical = RateModelDecay(*args, **kwargs3)
 try:
     model_optical._set_population(level=[-5, -4, -3, -2])
@@ -117,7 +126,7 @@ except:
     pass
 
 resp_pump3 = model_pump(freqs)
-# resp_optical3 = model_optical(freqs)
+resp_optical3 = model_optical.integrate_with_time(freqs, interaction_tof_optical, detection_tof)
 
 # Next, calculate with just 1 laser
 model_pump = RateModelPolar(*args, **kwargs)
@@ -125,9 +134,9 @@ try:
     model_pump._set_population(level=[-5, -4, -3, -2])
 except:
     pass
-kwargs['interaction_time'] = tof_optical
+kwargs['interaction_time'] = interaction_tof_optical
 kwargs['laser_intensity'] = [laser_intensity_optical]
-kwargs['scale'] = 1 * efficiency
+kwargs['scale'] = 1 * scale
 model_optical = RateModelDecay(*args, **kwargs)
 try:
     model_optical._set_population(level=[-5, -4, -3, -2])
@@ -135,16 +144,16 @@ except:
     pass
 
 resp_pump = model_pump(freqs)
-# resp_optical = model_optical(freqs)
+resp_optical = model_optical.integrate_with_time(freqs, interaction_tof_optical, detection_tof)
 
 fig, ax = plt.subplots(2, 2, sharex=True)
 ax[0, 0].plot(x_plot, resp_pump)
-# ax[1, 0].plot(x_plot, resp_optical)
+ax[1, 0].plot(x_plot, resp_optical)
 ax[0, 1].plot(x_plot, resp_pump3)
-# ax[1, 1].plot(x_plot, resp_optical3)
+ax[1, 1].plot(x_plot, resp_optical3)
 
 ax[0, 0].set_ylabel('Polarisation [%]')
-ax[1, 0].set_ylabel('Decay rate/atom [Hz]')
+ax[1, 0].set_ylabel('Photons/atom [#]')
 f_st = f_st[0] * 1e6
 ax[1, 0].set_xlabel('Frequency offset from {:.5f} nm [MHz]'.format(C/f_st * 1e9))
 ax[0, 0].set_title('Single laser')

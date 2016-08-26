@@ -187,7 +187,6 @@ class RateModel(BaseModel):
         A = A * self.partial_A
         A = np.transpose(A) - np.eye(A.shape[0]) * A.sum(axis=1)
         self.A_array_used = A
-        self.decay_matrix = np.abs(self.A_array_used * np.eye(self.A_array_used.shape[0]))
         self._edit_D_matrix()
 
     def _set_energies(self, energies):
@@ -427,7 +426,6 @@ class RateModel(BaseModel):
                 freq = self.fixed_frequencies[laser_index - self.vary_freqs]
                 if self.frequency_mode.lower() == 'offset':
                     freq += f
-
             D[i, j, laser_index] = self.D[i, j, laser_index](freq)
 
         D = D.sum(axis=2)
@@ -444,45 +442,69 @@ class RateModel(BaseModel):
     def _process_population(self, y):
         raise NotImplementedError('Function should be implemented in child classes!')
 
-    def __call__(self, x, convolve=False):
+    def __call__(self, x):
         try:
             response = np.zeros(x.size)
             for i, f in enumerate(x.flatten()):
                 self._evaluate_matrices(f)
                 dt = self._params['Interaction_time'].value / 400
-                y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))[-1, :]
-                response[i] = self._process_population(y)
+                y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))
+                response[i] = self._process_population(y)[-1]
             response = response.reshape(x.shape)
         except:
             self._evaluate_matrices(x)
             dt = self._params['Interaction_time'].value / 400
-            y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))[-1, :]
-            response = self._process_population(y)
+            y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))
+            response = self._process_population(y)[-1]
         response = self._params['Scale'].value * response + self._params['Background'].value
-        try:
-            if not convolve:
-                if self._params['FWHMG'].value > 0 and not self.shape.lower() == 'voigt':
-                    response = self._convolve_with_gaussian(x, response, sigma=self._params['FWHMG'].value / (2*(2*np.log(2))**0.5))
-        except:
-            pass
         return response
 
-    def _convolve_with_gaussian(self, x, y, sigma=1):
-        # Dumb implementation: calculate at several steps, take sums weighted by gaussian distribution
-        theta = np.linspace(-5, 5, 50)
-        x_grid, theta_grid = np.meshgrid(x, theta)
-        x_grid = x_grid + sigma * theta_grid
-        print('convolving')
-        y_grid = self(x_grid, convolve=True)
-        print('convolved')
-        sqrt2pi = np.sqrt(2*np.pi)
-        weights = np.exp(-0.5 * theta * theta / sigma**0.5) / (sigma * sqrt2pi)
-        integral_value = np.average(y_grid, axis=0, weights=weights)
-        return integral_value
+    def integrate_with_time(self, x, beginning, duration, steps=401, mode='integral'):
+        backup = self._params['Interaction_time'].value
+        time_vector = np.linspace(beginning, beginning + duration, steps)
+        response = np.zeros(x.size)
+        try:
+            for i, f in enumerate(x.flatten()):
+                self._evaluate_matrices(f)
+                dt = self._params['Interaction_time'].value / 400
+                y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))
+                y = integrate.odeint(self._rhsint, y[-1, :], time_vector)
+                y = self._process_population(y)
+                if mode == 'integral':
+                    response[i] = integrate.simps(y, time_vector)
+                elif mode == 'mean' or mode == 'average':
+                    response[i] = np.mean(y)
+            response = response.reshape(x.shape)
+        except:
+            self._evaluate_matrices(x)
+            dt = self._params['Interaction_time'].value / 400
+            y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))
+            y = integrate.odeint(self._rhsint, y[-1, :], time_vector)
+            y = self._process_population(y)
+            if mode == 'integral':
+                response = integrate.simps(y, time_vector)
+            elif mode == 'mean' or mode == 'average':
+                response = np.mean(y)
+        response = self._params['Scale'].value * response + self._params['Background'].value
+        self._params['Interaction_time'].value = backup
+        return response
+
+def convolve_with_gaussian(function, x, sigma=1):
+    # Dumb implementation: calculate at several steps, take sums weighted by gaussian distribution
+    # Not exactly correct as a convolution...
+    # theta = np.linspace(-5, 5, 50)
+    # x_grid, theta_grid = np.meshgrid(x, theta)
+    # x_grid = x_grid + sigma * theta_grid
+    # y_grid = function(x_grid)
+    sqrt2pi = np.sqrt(2*np.pi)
+    # weights = np.exp(-0.5 * theta * theta / sigma**2) / (sigma * sqrt2pi)
+    # integral_value = np.average(y_grid, axis=0, weights=weights)
+    integral_value = [integrate.quad(lambda y: np.exp(-0.5*(y/sigma)**2)/(sigma*sqrt2pi) * function(X-y), -np.inf, np.inf)[0] for X in x]
+    return integral_value
 
 class RateModelDecay(RateModel):
     def _process_population(self, y):
-        return np.dot(self.decay_matrix, y).sum()
+        return np.einsum('ij,kj->k', self.decay_matrix, y)
 
 class RateModelPolar(RateModel):
     def __init__(self, *args, **kwargs):
@@ -541,4 +563,4 @@ class RateModelPolar(RateModel):
             self.MJ = np.append(self.MJ, np.array(MJ))
 
     def _process_population(self, y):
-        return np.dot(self.MI, y) / self.I
+        return np.einsum('j,kj->k', self.MI, y) / self.I
