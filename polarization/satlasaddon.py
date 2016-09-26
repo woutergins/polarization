@@ -12,7 +12,7 @@ from satlas.basemodel import BaseModel
 from scipy import integrate
 from sympy.physics.wigner import wigner_6j, wigner_3j
 import scipy.constants as csts
-from satlas import lmfit
+import lmfit
 import itertools
 
 W6J = wigner_6j
@@ -461,14 +461,18 @@ class RateModel(BaseModel):
 
     def integrate_with_time(self, x, beginning, duration, steps=401, mode='integral'):
         backup = self._params['Interaction_time'].value
+        self._params['Interaction_time'].value = beginning
         time_vector = np.linspace(beginning, beginning + duration, steps)
         response = np.zeros(x.size)
         try:
             for i, f in enumerate(x.flatten()):
                 self._evaluate_matrices(f)
                 dt = self._params['Interaction_time'].value / 400
-                y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))
-                y = integrate.odeint(self._rhsint, y[-1, :], time_vector)
+                if not np.isclose(dt, 0):
+                    y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))
+                    y = integrate.odeint(self._rhsint, y[-1, :], time_vector)
+                else:
+                    y = integrate.odeint(self._rhsint, self.P, time_vector)
                 y = self._process_population(y)
                 if mode == 'integral':
                     response[i] = integrate.simps(y, time_vector)
@@ -478,8 +482,11 @@ class RateModel(BaseModel):
         except:
             self._evaluate_matrices(x)
             dt = self._params['Interaction_time'].value / 400
-            y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))
-            y = integrate.odeint(self._rhsint, y[-1, :], time_vector)
+            if not np.isclose(dt, 0):
+                y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))
+                y = integrate.odeint(self._rhsint, y[-1, :], time_vector)
+            else:
+                y = integrate.odeint(self._rhsint, self.P, time_vector)
             y = self._process_population(y)
             if mode == 'integral':
                 response = integrate.simps(y, time_vector)
