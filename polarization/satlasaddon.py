@@ -137,7 +137,7 @@ class BxRho_Lorentzian(Lorentzian):
 # MAIN CLASS #
 ##############
 class RateModel(BaseModel):
-    def __init__(self, I, J, L, ABC, centroids, energies, A_array, scale=1.0, shape='Voigt', laser_intensity=80, laser_mode=None, interaction_time=1e-6, fwhmG=0.1, fwhmL=None, background=0, field=0, fixed_frequencies=None, frequency_mode='fixed'):
+    def __init__(self, I, J, L, ABC, centroids, energies, A_array, scale=1.0, shape='Voigt', laser_intensity=80, laser_mode=None, interaction_time=1e-6, fwhmG=0.1, fwhmL=None, background_params=[0], field=0, fixed_frequencies=None, frequency_mode='fixed', purity=1.0):
         super(RateModel, self).__init__()
         self.I = I
         self.J = J
@@ -164,7 +164,7 @@ class RateModel(BaseModel):
         self._set_energies(energies)
         self._calculate_energy_coefficients()
 
-        self._params = self._populate_params(laser_intensity, ABC, centroids, shape, scale, fwhmG, fwhmL, interaction_time, background, field)
+        self._params = self._populate_params(laser_intensity, ABC, centroids, shape, scale, fwhmG, fwhmL, interaction_time, background_params, field, purity)
         self._set_population()
         self._calculate_A_partial()
         self._calculate_energy_changes()
@@ -198,7 +198,7 @@ class RateModel(BaseModel):
             E[ncs - n:ncs] = energies[i]
         self.energies = E * EV_TO_MHZ
 
-    def _populate_params(self, laser_intensity, ABC, centroids, shape, scale, fwhmG, FWHML, interaction_time, background, field):
+    def _populate_params(self, laser_intensity, ABC, centroids, shape, scale, fwhmG, FWHML, interaction_time, background_params, field, purity):
         p = lmfit.Parameters()
         for i, val in enumerate(laser_intensity):
             p.add('Laser_intensity_' + str(i), value=val, min=0, max=None)
@@ -226,8 +226,10 @@ class RateModel(BaseModel):
                         p.add('FWHMG', value=fwhmG, vary=fwhmG > 0, min=0)
         p.add('Scale', value=scale)
         p.add('Interaction_time', value=interaction_time, min=0)
-        p.add('Background', value=background)
+        for i, value in enumerate(background_params):
+            p.add('Background' + str(i), value=value)
         p.add('Field', value=field)
+        p.add('Purity', value=purity, min=0, max=1)
         return self._check_variation(p)
 
     def _check_variation(self, p):
@@ -379,11 +381,12 @@ class RateModel(BaseModel):
                         y = self.level_counts_cs[j] - self.level_counts[j] + l
                         if np.isclose(self.A_array[i, j], 0) or np.isclose(self.partial_A[x, y], 0):
                             continue
-                        frac = 1.0 if self.mode[laser_index] == (mze - mzg) else 0
+                        purity = self._params['Purity'].value
+                        frac = purity if self.mode[laser_index] == (mze - mzg) else (1.0 - purity) if self.mode[laser_index] == -(mze - mzg) else 0
                         if frac == 0:
                             pass
                         else:
-                            intensity = self._params['Laser_intensity_' + str(laser_index)].value
+                            intensity = frac * self._params['Laser_intensity_' + str(laser_index)].value
                             A = self._params['Transition_strength_' + str(i) + '_to_' + str(j)].value
                             mu = (self.energies[k] + self.energy_change[k]) - (self.energies[l] + self.energy_change[l])
                             kwargs = {'A': A, 'mu': mu, 'laser': intensity}
@@ -393,15 +396,17 @@ class RateModel(BaseModel):
                             else:
                                 kwargs['fwhm'] = self._params['FWHML_' + str(i) + '_to_' + str(j)].value * 1e6
                             D[x, y, laser_index] = bxrho(**kwargs)
-                            self.indices.append((x, y, laser_index, i, j))
+                            self.indices.append((x, y, laser_index, i, j, mze, mzg))
 
         self.D = D
 
     def _edit_D_matrix(self):
         self.locations = []
         self.transitions = []
-        for x, y, laser_index, i, j in self.indices:
-            intensity = self._params['Laser_intensity_' + str(laser_index)].value
+        for x, y, laser_index, i, j, mze, mzg in self.indices:
+            purity = self._params['Purity'].value
+            frac = purity if self.mode[laser_index] == (mze - mzg) else (1.0 - purity) if self.mode[laser_index] == -(mze - mzg) else 0
+            intensity = frac * self._params['Laser_intensity_' + str(laser_index)].value
             A = self.A_array_used[y, x]
             mu = (self.energies[x] + self.energy_change[x]) - (self.energies[y] + self.energy_change[y])
             self.D[x, y, laser_index].mu = mu
@@ -419,7 +424,7 @@ class RateModel(BaseModel):
 
     def _evaluate_matrices(self, f):
         D = np.zeros(self.D.shape)
-        for i, j, laser_index, _, _ in self.indices:
+        for i, j, laser_index, _, _, _, _ in self.indices:
             if laser_index < self.vary_freqs:
                 freq = f
             else:
@@ -456,8 +461,9 @@ class RateModel(BaseModel):
             dt = self._params['Interaction_time'].value / 400
             y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))
             response = self._process_population(y)[-1]
-        response = self._params['Scale'].value * response + self._params['Background'].value
-        return response
+        response = self._params['Scale'].value * response
+        background_params = [self._params[par_name].value for par_name in self._params if par_name.startswith('Background')]
+        return response + np.polyval(background_params, x)
 
     def integrate_with_time(self, x, beginning, duration, steps=401, mode='integral'):
         backup = self._params['Interaction_time'].value
@@ -468,7 +474,7 @@ class RateModel(BaseModel):
             for i, f in enumerate(x.flatten()):
                 self._evaluate_matrices(f)
                 dt = self._params['Interaction_time'].value / 400
-                if not np.isclose(dt, 0):
+                if True:
                     y = integrate.odeint(self._rhsint, self.P, np.arange(0, self._params['Interaction_time'].value, dt))
                     y = integrate.odeint(self._rhsint, y[-1, :], time_vector)
                 else:

@@ -129,8 +129,8 @@ for I, ABC, centroid, mass, asymmetry, title in zip(i, abc, cen, m, asym, tit):
 
     scale = geometrical_efficiency * quantum_efficiency
     centroids = [centroid]
-    field = 0 * 10e-4
-    background = 0
+    field = 2 * 10e-4
+    background = [0]
     args = (I, J, L, ABC, centroids, energies, A_array)
     fig, ax = plt.subplots(2, 1, sharex=True)
     for laser_mode, title_add in zip([[-1]], ['$\sigma^-$']):
@@ -139,7 +139,7 @@ for I, ABC, centroid, mass, asymmetry, title in zip(i, abc, cen, m, asym, tit):
             'scale': scale,
             'laser_mode': laser_mode,
             'interaction_time': interaction_tof_optical,
-            'background': background,
+            'background_params': background,
             'shape': 'voigt',
             'field': field,
             'fwhmG': 0}
@@ -161,11 +161,14 @@ for I, ABC, centroid, mass, asymmetry, title in zip(i, abc, cen, m, asym, tit):
 
         frequencies = f_trans * doppler_factor
         print((frequencies[-1] - frequencies[0])/(voltage[-1]-voltage[0]))
+        import lmfit as lm
+        print(laser_intensity_asymmetry)
+        lm.report_fit(model_polar.params)
         ax[1].set_xlabel('Line voltage [V]')
         ax[0].set_ylabel('Photons per nucleus [#]')
         ax[1].set_ylabel('Asymmetry')
         sqrt2log2t2 = 2 * np.sqrt(2 * np.log(2))
-        ax[0].plot(voltage / KEPCO, model_decay.integrate_with_time(frequencies, interaction_tof_optical, detection_tof), label=title_add)
+        # ax[0].plot(voltage / KEPCO, model_decay.integrate_with_time(frequencies, interaction_tof_optical, detection_tof), label=title_add)
         ax[1].plot(voltage / KEPCO, model_polar(frequencies))
         ax[0].set_title(title + ', {:.4f} cm$^{{-1}}$'.format(laser_wavenumber))
         # fig.savefig(title + '_' + str(laser_mode[0]), bbox_inches='tight')
